@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "witPin",
+  "short_name": "witPin",
+  "version": "1.0.0",
+  "description": "Pin, group and organize websites and tabs.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "tabGroups",
+    "contextMenus"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "witPin"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "src/background/background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+P",
+        "mac": "Alt+Shift+P"
+      },
+      "description": "Open WitPin Popup"
+    },
+    "save-current-tab": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Alt+Shift+S"
+      },
+      "description": "Save current tab to WitPin"
+    },
+    "save-workspace": {
+      "suggested_key": {
+        "default": "Alt+Shift+G",
+        "mac": "Alt+Shift+G"
+      },
+      "description": "Save current window tabs as workspace"
+    }
+  }
+}

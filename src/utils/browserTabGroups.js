@@ -121,7 +121,7 @@ class BrowserTabGroupsManager {
           hasActiveTab: true,
           tabCount: 2,
           tabs: [
-            { id: 1001, title: 'Wit Tools - Productivity', url: 'https://wit-tools.vercel.app', favIconUrl: '', active: true },
+            { id: 1001, title: 'witPin - Tools', url: 'https://wittools.vercel.app/witpin', favIconUrl: '', active: true },
             { id: 1002, title: 'GitHub Repository', url: 'https://github.com', favIconUrl: '', active: false }
           ]
         }

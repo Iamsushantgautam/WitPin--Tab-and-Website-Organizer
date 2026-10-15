@@ -2,8 +2,9 @@
   "manifest_version": 3,
   "name": "witPin",
   "short_name": "witPin",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Pin, group and organize websites and tabs.",
+  "homepage_url": "https://wittools.vercel.app/witpin",
   "permissions": [
     "storage",
     "tabs",

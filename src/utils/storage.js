@@ -20,7 +20,9 @@ const INITIAL_DATA = {
     theme: 'system', // 'system' | 'light' | 'dark'
     openInNewTab: true,
     autoCloseAfterSave: false,
-    confirmDelete: true
+    confirmDelete: true,
+    defaultExpandGroups: false,
+    expandedGroupIds: []
   }
 };
 
@@ -259,6 +261,29 @@ export async function movePinnedSite(siteId, direction) {
 }
 
 /**
+ * Move a group up or down in the list
+ */
+export async function moveGroup(groupId, direction) {
+  const data = await getData();
+  const index = (data.groups || []).findIndex(g => g.id === groupId);
+  if (index === -1) return data;
+
+  let targetIndex = index;
+  if (direction === 'up' && index > 0) {
+    targetIndex = index - 1;
+  } else if (direction === 'down' && index < data.groups.length - 1) {
+    targetIndex = index + 1;
+  }
+
+  if (targetIndex !== index) {
+    const [item] = data.groups.splice(index, 1);
+    data.groups.splice(targetIndex, 0, item);
+    await saveData(data);
+  }
+  return data;
+}
+
+/**
  * Move a site inside a group up or down
  */
 export async function moveSiteInGroup(groupId, siteId, direction) {
@@ -365,7 +390,7 @@ export async function moveSiteBetweenGroups(fromGroupId, toGroupId, siteId) {
 /**
  * Create a new website group
  */
-export async function createGroup({ name, color = '#6366F1', chromeGroupId = null, sites = [] }) {
+export async function createGroup({ name, color = '#6366F1', chromeGroupId = null, sites = [], defaultOpen = false }) {
   const trimmedName = name?.trim();
   if (!trimmedName) throw new Error('Group name cannot be empty.');
 
@@ -394,6 +419,7 @@ export async function createGroup({ name, color = '#6366F1', chromeGroupId = nul
     name: trimmedName,
     color: color || '#6366F1',
     chromeGroupId: chromeGroupId || null,
+    defaultOpen: typeof defaultOpen === 'boolean' ? defaultOpen : false,
     sites: sanitizedSites,
     createdAt: Date.now(),
     updatedAt: Date.now()
@@ -458,6 +484,7 @@ export async function duplicateGroup(groupId) {
     id: generateUniqueId(),
     name: `${group.name} (Copy)`,
     chromeGroupId: null,
+    defaultOpen: !!group.defaultOpen,
     sites: (group.sites || []).map(s => ({ ...s, id: generateUniqueId() })),
     createdAt: Date.now(),
     updatedAt: Date.now()
@@ -601,6 +628,17 @@ export async function updateSettings(settingsUpdates) {
   };
   await saveData(data);
   return data.settings;
+}
+
+/**
+ * Persist currently expanded group IDs in settings
+ */
+export async function saveExpandedGroupIds(expandedIds) {
+  const data = await getData();
+  if (!data.settings) data.settings = {};
+  data.settings.expandedGroupIds = Array.isArray(expandedIds) ? expandedIds : Array.from(expandedIds || []);
+  await saveData(data);
+  return data.settings.expandedGroupIds;
 }
 
 /**

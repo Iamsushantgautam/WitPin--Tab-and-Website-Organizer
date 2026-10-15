@@ -19,11 +19,14 @@ import {
   deleteGroup,
   duplicateGroup,
   reorderGroups,
+  moveGroup,
+  updateSettings,
   addSiteToGroup,
   removeSiteFromGroup,
   reorderSitesInGroup,
   saveWorkspace,
   unlinkChromeGroup,
+  saveExpandedGroupIds,
   normalizeUrl
 } from '../utils/storage.js';
 
@@ -43,7 +46,7 @@ class WitPinPopup {
     this.activeTabs = [];
     this.expandedGroupIds = new Set();
     this.activeDropdown = null;
-    this.pinnedViewMode = 'list'; // 'list' | 'grid'
+    this.pinnedViewMode = 'list';
 
     // Toast state
     this.toastTimer = null;
@@ -113,10 +116,66 @@ class WitPinPopup {
   async loadStorageData() {
     try {
       this.data = await getData();
+      this.syncExpandedGroupIds();
     } catch (err) {
       console.error('WitPin storage load error:', err);
     } finally {
       this.loading = false;
+    }
+  }
+
+  syncExpandedGroupIds() {
+    const groups = this.data?.groups || [];
+    const validGroupIds = new Set(groups.map(g => g.id));
+    const allGroupsDefault = !!this.data?.settings?.defaultExpandGroups;
+
+    if (!this._hasInitializedExpansion) {
+      this._hasInitializedExpansion = true;
+      const initialSet = new Set();
+
+      if (allGroupsDefault) {
+        groups.forEach(g => initialSet.add(g.id));
+      } else {
+        // 1. Add groups configured with individual defaultOpen: true
+        groups.forEach(g => {
+          if (g.defaultOpen) {
+            initialSet.add(g.id);
+          }
+        });
+
+        // 2. Also restore any groups previously expanded and saved across refreshes/reloads
+        const savedExpanded = this.data?.settings?.expandedGroupIds;
+        if (Array.isArray(savedExpanded)) {
+          savedExpanded.forEach(id => {
+            if (validGroupIds.has(id)) {
+              initialSet.add(id);
+            }
+          });
+        }
+      }
+
+      this.expandedGroupIds = initialSet;
+    } else {
+      for (const id of this.expandedGroupIds) {
+        if (!validGroupIds.has(id)) {
+          this.expandedGroupIds.delete(id);
+        }
+      }
+      if (allGroupsDefault) {
+        groups.forEach(g => this.expandedGroupIds.add(g.id));
+      }
+    }
+  }
+
+  async persistExpandedState() {
+    try {
+      const arr = Array.from(this.expandedGroupIds);
+      await saveExpandedGroupIds(arr);
+      if (this.data && this.data.settings) {
+        this.data.settings.expandedGroupIds = arr;
+      }
+    } catch (err) {
+      console.warn('Failed to persist expanded state:', err);
     }
   }
 
@@ -225,7 +284,7 @@ class WitPinPopup {
     if (!headerEl) return;
 
     headerEl.innerHTML = `
-      <div class="brand-logo" id="header-brand-click" style="cursor: pointer;">
+      <div class="brand-logo" id="header-brand-click" style="cursor: pointer;" title="witPin by witTools (Click to visit wittools.vercel.app/witpin)">
         <div class="logo-icon-badge">
           ${getIconSvg('pin', '', 14)}
         </div>
@@ -291,6 +350,14 @@ class WitPinPopup {
                   <span class="menu-sub">Save all current window tabs</span>
                 </div>
               </button>
+              <div class="menu-divider" style="margin: 4px 0;"></div>
+              <button id="add-menu-visit-website">
+                <span class="menu-icon">${getIconSvg('globe', 'text-accent', 14)}</span>
+                <div class="menu-text">
+                  <span class="menu-title">Official Website</span>
+                  <span class="menu-sub">wittools.vercel.app/witpin</span>
+                </div>
+              </button>
             </div>
           ` : ''}
         </div>
@@ -303,8 +370,12 @@ class WitPinPopup {
 
     // Bind Header Events
     document.getElementById('header-brand-click')?.addEventListener('click', () => {
-      this.viewMode = 'main';
-      this.render();
+      if (this.viewMode !== 'main') {
+        this.viewMode = 'main';
+        this.render();
+      } else {
+        this.openUrl('https://wittools.vercel.app/witpin');
+      }
     });
 
     const searchInput = document.getElementById('header-search-input');
@@ -344,6 +415,11 @@ class WitPinPopup {
       this.openWorkspaceModal();
     });
 
+    document.getElementById('add-menu-visit-website')?.addEventListener('click', () => {
+      this.activeDropdown = null;
+      this.openUrl('https://wittools.vercel.app/witpin');
+    });
+
     document.getElementById('btn-open-settings')?.addEventListener('click', () => {
       if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.openOptionsPage) {
         chrome.runtime.openOptionsPage();
@@ -376,12 +452,12 @@ class WitPinPopup {
 
     const filteredGroups = query
       ? groups.map(g => {
-          const nameMatch = g.name.toLowerCase().includes(query);
-          const siteMatches = (g.sites || []).filter(s => s.title.toLowerCase().includes(query) || s.url.toLowerCase().includes(query));
-          if (nameMatch) return g;
-          if (siteMatches.length > 0) return { ...g, sites: siteMatches };
-          return null;
-        }).filter(Boolean)
+        const nameMatch = g.name.toLowerCase().includes(query);
+        const siteMatches = (g.sites || []).filter(s => s.title.toLowerCase().includes(query) || s.url.toLowerCase().includes(query));
+        if (nameMatch) return g;
+        if (siteMatches.length > 0) return { ...g, sites: siteMatches };
+        return null;
+      }).filter(Boolean)
       : groups;
 
     if (query && filteredPinned.length === 0 && filteredGroups.length === 0) {
@@ -409,6 +485,8 @@ class WitPinPopup {
   renderGroupsColumn(container, groups) {
     if (!container) return;
 
+    const allExpanded = groups.length > 0 && groups.every(g => this.expandedGroupIds.has(g.id));
+
     container.innerHTML = `
       <div class="dashboard-section">
         <div class="section-header">
@@ -416,9 +494,29 @@ class WitPinPopup {
             ${getIconSvg('folder', 'text-accent', 14)}
             <span>Groups (${groups.length})</span>
           </span>
-          <button id="btn-add-group-header" class="btn-icon btn-add-subtle" title="New Group">
-            ${getIconSvg('plus', '', 14)}
-          </button>
+          <div style="display: flex; align-items: center; gap: 4px;">
+            ${groups.length > 0 ? `
+              <button
+                id="btn-toggle-expand-all"
+                class="btn-icon btn-xs"
+                title="${allExpanded ? 'Collapse All Groups (Hide Links)' : 'Expand All Groups (Show All Links)'}"
+                aria-label="${allExpanded ? 'Collapse All Groups' : 'Expand All Groups'}"
+              >
+                ${getIconSvg(allExpanded ? 'chevronUp' : 'chevronsUpDown', '', 13)}
+              </button>
+              <button
+                id="btn-all-groups-default-toggle"
+                class="btn-icon btn-xs ${this.data?.settings?.defaultExpandGroups ? 'active-accent' : ''}"
+                title="All Groups Default Show: ${this.data?.settings?.defaultExpandGroups ? 'ON (Always open all)' : 'OFF (Opens per individual group setting)'}"
+                aria-label="Toggle All Groups Default Show"
+              >
+                ${getIconSvg('layers', this.data?.settings?.defaultExpandGroups ? 'text-accent' : '', 13)}
+              </button>
+            ` : ''}
+            <button id="btn-add-group-header" class="btn-icon btn-add-subtle" title="New Group">
+              ${getIconSvg('plus', '', 14)}
+            </button>
+          </div>
         </div>
 
         ${groups.length === 0 ? `
@@ -436,6 +534,34 @@ class WitPinPopup {
         `}
       </div>
     `;
+
+    document.getElementById('btn-toggle-expand-all')?.addEventListener('click', async () => {
+      const isAllExpanded = groups.length > 0 && groups.every(g => this.expandedGroupIds.has(g.id));
+      if (isAllExpanded) {
+        this.expandedGroupIds.clear();
+        this.showToast('All groups collapsed');
+      } else {
+        groups.forEach(g => this.expandedGroupIds.add(g.id));
+        this.showToast('All group links shown');
+      }
+      await this.persistExpandedState();
+      this.renderMainContent();
+    });
+
+    document.getElementById('btn-all-groups-default-toggle')?.addEventListener('click', async () => {
+      const currentVal = !!this.data?.settings?.defaultExpandGroups;
+      const newVal = !currentVal;
+      const updated = await updateSettings({ defaultExpandGroups: newVal });
+      this.data.settings = updated;
+      if (newVal) {
+        groups.forEach(g => this.expandedGroupIds.add(g.id));
+      } else {
+        this.expandedGroupIds = new Set(groups.filter(g => g.defaultOpen).map(g => g.id));
+      }
+      await this.persistExpandedState();
+      this.renderMainContent();
+      this.showToast(`All Groups Default Show: ${newVal ? 'ON' : 'OFF'}`);
+    });
 
     document.getElementById('btn-add-group-header')?.addEventListener('click', () => this.openCreateGroupModal());
     document.getElementById('btn-create-first-group')?.addEventListener('click', () => this.openCreateGroupModal());
@@ -458,6 +584,7 @@ class WitPinPopup {
           <div class="group-card-title-area">
             <span class="group-color-dot" style="background-color: ${group.color || '#6366F1'};"></span>
             <span class="group-name">${this.escapeHtml(group.name)}</span>
+            ${group.defaultOpen ? `<span title="Default Show (This Group): ON" style="font-size: 8.5px; padding: 1px 4px; border-radius: var(--radius-xs); background: var(--accent-light); color: var(--accent-primary); font-weight: 700; text-transform: uppercase;">AUTO</span>` : ''}
             ${isLinked ? `<span class="active-pulse-dot" title="Linked to active Chrome Tab Group"></span>` : ''}
           </div>
           <span class="badge-count-sm">${(group.sites || []).length}</span>
@@ -500,23 +627,55 @@ class WitPinPopup {
         ` : ''}
       `;
 
-      // Allow dropping dragged pinned sites onto this group
+      groupCard.setAttribute('draggable', 'true');
+      groupCard.dataset.groupId = group.id;
+
+      // Group drag handlers for reordering
+      groupCard.addEventListener('dragstart', (e) => {
+        if (e.target.closest('.group-site-item') || e.target.closest('button')) {
+          e.preventDefault();
+          return;
+        }
+        this._isDragging = true;
+        this._draggedGroupId = group.id;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', group.id);
+        groupCard.classList.add('is-dragging');
+      });
+
+      groupCard.addEventListener('dragend', () => {
+        groupCard.classList.remove('is-dragging');
+        document.querySelectorAll('.group-card-compact, .pinned-list-item, .pinned-card-item').forEach(el => {
+          el.classList.remove('drag-over', 'drag-target-group');
+        });
+        setTimeout(() => {
+          this._isDragging = false;
+          this._draggedGroupId = null;
+        }, 50);
+      });
+
+      // Allow dropping dragged pinned sites onto this group or dropping groups to reorder
       groupCard.addEventListener('dragover', (e) => {
         if (this._draggedPinnedId) {
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
           groupCard.classList.add('drag-target-group');
+        } else if (this._draggedGroupId && this._draggedGroupId !== group.id) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          groupCard.classList.add('drag-over');
         }
       });
 
       groupCard.addEventListener('dragleave', () => {
-        groupCard.classList.remove('drag-target-group');
+        groupCard.classList.remove('drag-target-group', 'drag-over');
       });
 
       groupCard.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        groupCard.classList.remove('drag-target-group', 'drag-over');
+
         if (this._draggedPinnedId) {
-          e.preventDefault();
-          groupCard.classList.remove('drag-target-group');
           const siteId = this._draggedPinnedId;
           this._draggedPinnedId = null;
           try {
@@ -527,6 +686,26 @@ class WitPinPopup {
           } catch (err) {
             this.showToast(err.message || 'Failed to move website', 'error');
           }
+          return;
+        }
+
+        if (this._draggedGroupId && this._draggedGroupId !== group.id) {
+          const sourceId = this._draggedGroupId;
+          this._draggedGroupId = null;
+
+          const allGroups = [...(this.data.groups || [])];
+          const fromIndex = allGroups.findIndex(g => g.id === sourceId);
+          const toIndex = allGroups.findIndex(g => g.id === group.id);
+
+          if (fromIndex !== -1 && toIndex !== -1) {
+            const [movedGroup] = allGroups.splice(fromIndex, 1);
+            allGroups.splice(toIndex, 0, movedGroup);
+
+            await reorderGroups(allGroups);
+            await this.loadStorageData();
+            this.renderMainContent();
+            this.showToast('Group order updated');
+          }
         }
       });
 
@@ -535,11 +714,13 @@ class WitPinPopup {
 
     // Event delegation for Group Card actions
     listEl.addEventListener('click', async (e) => {
+      if (this._isDragging) return;
       const toggleBtn = e.target.closest('[data-action="toggle-expand"]');
       if (toggleBtn) {
         const gId = toggleBtn.dataset.groupId;
         if (this.expandedGroupIds.has(gId)) this.expandedGroupIds.delete(gId);
         else this.expandedGroupIds.add(gId);
+        await this.persistExpandedState();
         this.renderMainContent();
         return;
       }
@@ -597,6 +778,7 @@ class WitPinPopup {
         const gId = headerArea.dataset.groupId;
         if (this.expandedGroupIds.has(gId)) this.expandedGroupIds.delete(gId);
         else this.expandedGroupIds.add(gId);
+        await this.persistExpandedState();
         this.renderMainContent();
       }
     });
@@ -613,9 +795,6 @@ class WitPinPopup {
             <span>Pinned (${pinnedSites.length})</span>
           </span>
           <div style="display: flex; align-items: center; gap: 4px;">
-            <button id="btn-toggle-pin-layout" class="btn-icon btn-xs" title="Toggle List / Grid View" aria-label="Toggle List / Grid View">
-              ${getIconSvg(this.pinnedViewMode === 'grid' ? 'list' : 'grid', '', 13)}
-            </button>
             <button id="btn-add-pin-header" class="btn-icon btn-add-subtle" title="Pin Website" aria-label="Pin Website">
               ${getIconSvg('plus', '', 14)}
             </button>
@@ -632,242 +811,123 @@ class WitPinPopup {
               <span>Pin Website</span>
             </button>
           </div>
-        ` : this.pinnedViewMode === 'list' ? `
-          <div class="pinned-list-wrapper" id="pinned-list"></div>
         ` : `
-          <div class="pinned-grid-wrapper" id="pinned-grid"></div>
+          <div class="pinned-list-wrapper" id="pinned-list"></div>
         `}
       </div>
     `;
 
-    document.getElementById('btn-toggle-pin-layout')?.addEventListener('click', () => {
-      this.pinnedViewMode = this.pinnedViewMode === 'list' ? 'grid' : 'list';
-      this.renderMainContent();
-    });
-
     document.getElementById('btn-add-pin-header')?.addEventListener('click', () => this.openAddWebsiteModal());
     document.getElementById('btn-create-first-pin')?.addEventListener('click', () => this.openAddWebsiteModal());
 
-    if (this.pinnedViewMode === 'list') {
-      const listEl = document.getElementById('pinned-list');
-      if (!listEl) return;
+    const listEl = document.getElementById('pinned-list');
+    if (!listEl) return;
 
-      pinnedSites.forEach(site => {
-        const pinItem = document.createElement('div');
-        pinItem.className = 'pinned-list-item';
-        pinItem.setAttribute('tabindex', '0');
-        pinItem.setAttribute('role', 'button');
-        pinItem.setAttribute('aria-label', `Open ${site.title}`);
-        pinItem.setAttribute('draggable', 'true');
-        pinItem.dataset.siteId = site.id;
+    pinnedSites.forEach(site => {
+      const pinItem = document.createElement('div');
+      pinItem.className = 'pinned-list-item';
+      pinItem.setAttribute('tabindex', '0');
+      pinItem.setAttribute('role', 'button');
+      pinItem.setAttribute('aria-label', `Open ${site.title}`);
+      pinItem.setAttribute('draggable', 'true');
+      pinItem.dataset.siteId = site.id;
 
-        const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
-        const letterBadge = getLetterBadgeSvg(site.url, site.title);
-        const domain = getDomain(site.url);
+      const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
+      const letterBadge = getLetterBadgeSvg(site.url, site.title);
+      const domain = getDomain(site.url);
 
-        pinItem.innerHTML = `
-          <span class="pinned-drag-handle" title="Drag to reorder">${getIconSvg('grip', '', 11)}</span>
-          <img
-            class="site-favicon-sm"
-            src="${this.escapeHtml(faviconUrl)}"
-            style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px; object-fit: contain; flex-shrink: 0;"
-            alt=""
-            onError="this.onerror=null; this.src='${letterBadge}';"
-          />
-          <div class="site-text-details">
-            <span class="site-title-link" title="${this.escapeHtml(site.title)}">${this.escapeHtml(site.title)}</span>
-            <span class="site-url-subtext" title="${this.escapeHtml(site.url)}">${this.escapeHtml(site.url || domain)}</span>
-          </div>
-          <button class="btn-icon btn-xs unpin-card-btn" data-action="site-menu" data-type="pinned" data-site-id="${site.id}" title="Website options" aria-label="Website options">
-            ${getIconSvg('moreVertical', '', 11)}
-          </button>
-        `;
+      pinItem.innerHTML = `
+        <span class="pinned-drag-handle" title="Drag to reorder">${getIconSvg('grip', '', 11)}</span>
+        <img
+          class="site-favicon-sm"
+          src="${this.escapeHtml(faviconUrl)}"
+          style="width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px; object-fit: contain; flex-shrink: 0;"
+          alt=""
+          onError="this.onerror=null; this.src='${letterBadge}';"
+        />
+        <div class="site-text-details">
+          <span class="site-title-link" title="${this.escapeHtml(site.title)}">${this.escapeHtml(site.title)}</span>
+          <span class="site-url-subtext" title="${this.escapeHtml(site.url)}">${this.escapeHtml(site.url || domain)}</span>
+        </div>
+        <button class="btn-icon btn-xs unpin-card-btn" data-action="site-menu" data-type="pinned" data-site-id="${site.id}" title="Website options" aria-label="Website options">
+          ${getIconSvg('moreVertical', '', 11)}
+        </button>
+      `;
 
-        // Drag & drop handlers
-        pinItem.addEventListener('dragstart', (e) => {
-          this._isDragging = true;
-          this._draggedPinnedId = site.id;
-          e.dataTransfer.effectAllowed = 'move';
-          e.dataTransfer.setData('text/plain', site.id);
-          pinItem.classList.add('is-dragging');
-        });
-
-        pinItem.addEventListener('dragend', () => {
-          pinItem.classList.remove('is-dragging');
-          document.querySelectorAll('.pinned-list-item, .pinned-card-item, .group-card-compact').forEach(el => {
-            el.classList.remove('drag-over', 'drag-target-group');
-          });
-          setTimeout(() => {
-            this._isDragging = false;
-            this._draggedPinnedId = null;
-          }, 50);
-        });
-
-        pinItem.addEventListener('dragover', (e) => {
-          if (!this._draggedPinnedId || this._draggedPinnedId === site.id) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          pinItem.classList.add('drag-over');
-        });
-
-        pinItem.addEventListener('dragleave', () => {
-          pinItem.classList.remove('drag-over');
-        });
-
-        pinItem.addEventListener('drop', async (e) => {
-          e.preventDefault();
-          pinItem.classList.remove('drag-over');
-          const sourceId = this._draggedPinnedId || e.dataTransfer.getData('text/plain');
-          if (!sourceId || sourceId === site.id) return;
-
-          const pinned = [...(this.data.pinned || [])];
-          const fromIndex = pinned.findIndex(p => p.id === sourceId);
-          const toIndex = pinned.findIndex(p => p.id === site.id);
-          if (fromIndex === -1 || toIndex === -1) return;
-
-          const [movedItem] = pinned.splice(fromIndex, 1);
-          pinned.splice(toIndex, 0, movedItem);
-
-          await reorderPinned(pinned);
-          await this.loadStorageData();
-          this.renderMainContent();
-          this.showToast('Pinned order updated');
-        });
-
-        // Handle item click
-        pinItem.addEventListener('click', async (e) => {
-          if (this._isDragging) return;
-          const menuBtn = e.target.closest('[data-action="site-menu"]');
-          if (menuBtn) {
-            e.stopPropagation();
-            this.openSiteContextMenu(site, 'pinned', null, menuBtn);
-            return;
-          }
-
-          this.openUrl(site.url);
-        });
-
-        // Handle Enter / Space keyboard navigation
-        pinItem.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            this.openUrl(site.url);
-          }
-        });
-
-        listEl.appendChild(pinItem);
+      // Drag & drop handlers
+      pinItem.addEventListener('dragstart', (e) => {
+        this._isDragging = true;
+        this._draggedPinnedId = site.id;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', site.id);
+        pinItem.classList.add('is-dragging');
       });
-    } else {
-      const gridEl = document.getElementById('pinned-grid');
-      if (!gridEl) return;
 
-      pinnedSites.forEach(site => {
-        const pinCard = document.createElement('div');
-        pinCard.className = 'pinned-card-item';
-        pinCard.setAttribute('tabindex', '0');
-        pinCard.setAttribute('role', 'button');
-        pinCard.setAttribute('aria-label', `Open ${site.title}`);
-        pinCard.setAttribute('draggable', 'true');
-        pinCard.dataset.siteId = site.id;
-
-        const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
-        const letterBadge = getLetterBadgeSvg(site.url, site.title);
-        const domain = getDomain(site.url);
-
-        pinCard.innerHTML = `
-          <button class="btn-icon btn-xs unpin-card-btn" data-action="site-menu" data-type="pinned" data-site-id="${site.id}" title="Website options" aria-label="Website options">
-            ${getIconSvg('moreVertical', '', 11)}
-          </button>
-          <div class="pinned-card-favicon-container">
-            <img
-              class="pinned-card-favicon"
-              src="${this.escapeHtml(faviconUrl)}"
-              style="width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; object-fit: contain;"
-              alt=""
-              onError="this.onerror=null; this.src='${letterBadge}';"
-            />
-          </div>
-          <div class="pinned-card-info">
-            <span class="pinned-card-title" title="${this.escapeHtml(site.title)}">${this.escapeHtml(site.title)}</span>
-            <span class="pinned-card-domain" title="${this.escapeHtml(domain)}">${this.escapeHtml(domain)}</span>
-          </div>
-        `;
-
-        // Drag & drop handlers
-        pinCard.addEventListener('dragstart', (e) => {
-          this._isDragging = true;
-          this._draggedPinnedId = site.id;
-          e.dataTransfer.effectAllowed = 'move';
-          e.dataTransfer.setData('text/plain', site.id);
-          pinCard.classList.add('is-dragging');
+      pinItem.addEventListener('dragend', () => {
+        pinItem.classList.remove('is-dragging');
+        document.querySelectorAll('.pinned-list-item, .pinned-card-item, .group-card-compact').forEach(el => {
+          el.classList.remove('drag-over', 'drag-target-group');
         });
-
-        pinCard.addEventListener('dragend', () => {
-          pinCard.classList.remove('is-dragging');
-          document.querySelectorAll('.pinned-list-item, .pinned-card-item, .group-card-compact').forEach(el => {
-            el.classList.remove('drag-over', 'drag-target-group');
-          });
-          setTimeout(() => {
-            this._isDragging = false;
-            this._draggedPinnedId = null;
-          }, 50);
-        });
-
-        pinCard.addEventListener('dragover', (e) => {
-          if (!this._draggedPinnedId || this._draggedPinnedId === site.id) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          pinCard.classList.add('drag-over');
-        });
-
-        pinCard.addEventListener('dragleave', () => {
-          pinCard.classList.remove('drag-over');
-        });
-
-        pinCard.addEventListener('drop', async (e) => {
-          e.preventDefault();
-          pinCard.classList.remove('drag-over');
-          const sourceId = this._draggedPinnedId || e.dataTransfer.getData('text/plain');
-          if (!sourceId || sourceId === site.id) return;
-
-          const pinned = [...(this.data.pinned || [])];
-          const fromIndex = pinned.findIndex(p => p.id === sourceId);
-          const toIndex = pinned.findIndex(p => p.id === site.id);
-          if (fromIndex === -1 || toIndex === -1) return;
-
-          const [movedItem] = pinned.splice(fromIndex, 1);
-          pinned.splice(toIndex, 0, movedItem);
-
-          await reorderPinned(pinned);
-          await this.loadStorageData();
-          this.renderMainContent();
-          this.showToast('Pinned order updated');
-        });
-
-        // Handle card click
-        pinCard.addEventListener('click', async (e) => {
-          if (this._isDragging) return;
-          const menuBtn = e.target.closest('[data-action="site-menu"]');
-          if (menuBtn) {
-            e.stopPropagation();
-            this.openSiteContextMenu(site, 'pinned', null, menuBtn);
-            return;
-          }
-
-          this.openUrl(site.url);
-        });
-
-        // Handle Enter / Space keyboard navigation
-        pinCard.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            this.openUrl(site.url);
-          }
-        });
-
-        gridEl.appendChild(pinCard);
+        setTimeout(() => {
+          this._isDragging = false;
+          this._draggedPinnedId = null;
+        }, 50);
       });
-    }
+
+      pinItem.addEventListener('dragover', (e) => {
+        if (!this._draggedPinnedId || this._draggedPinnedId === site.id) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        pinItem.classList.add('drag-over');
+      });
+
+      pinItem.addEventListener('dragleave', () => {
+        pinItem.classList.remove('drag-over');
+      });
+
+      pinItem.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        pinItem.classList.remove('drag-over');
+        const sourceId = this._draggedPinnedId || e.dataTransfer.getData('text/plain');
+        if (!sourceId || sourceId === site.id) return;
+
+        const pinned = [...(this.data.pinned || [])];
+        const fromIndex = pinned.findIndex(p => p.id === sourceId);
+        const toIndex = pinned.findIndex(p => p.id === site.id);
+        if (fromIndex === -1 || toIndex === -1) return;
+
+        const [movedItem] = pinned.splice(fromIndex, 1);
+        pinned.splice(toIndex, 0, movedItem);
+
+        await reorderPinned(pinned);
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Pinned order updated');
+      });
+
+      // Handle item click
+      pinItem.addEventListener('click', async (e) => {
+        if (this._isDragging) return;
+        const menuBtn = e.target.closest('[data-action="site-menu"]');
+        if (menuBtn) {
+          e.stopPropagation();
+          this.openSiteContextMenu(site, 'pinned', null, menuBtn);
+          return;
+        }
+
+        this.openUrl(site.url);
+      });
+
+      // Handle Enter / Space keyboard navigation
+      pinItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          this.openUrl(site.url);
+        }
+      });
+
+      listEl.appendChild(pinItem);
+    });
   }
 
   renderActiveTabsView(container) {
@@ -892,11 +952,11 @@ class WitPinPopup {
           ${this.activeTabs.length === 0 ? `
             <div style="text-align: center; padding: 24px; color: var(--text-muted); font-size: 11.5px;">No open browser tabs found.</div>
           ` : this.activeTabs.map(tab => {
-            const isAlreadyPinned = pinnedUrls.has(normalizeUrl(tab.url));
-            const faviconUrl = cleanFaviconUrl(tab.favIconUrl, tab.url, tab.title);
-            const letterBadge = getLetterBadgeSvg(tab.url, tab.title);
+      const isAlreadyPinned = pinnedUrls.has(normalizeUrl(tab.url));
+      const faviconUrl = cleanFaviconUrl(tab.favIconUrl, tab.url, tab.title);
+      const letterBadge = getLetterBadgeSvg(tab.url, tab.title);
 
-            return `
+      return `
               <div class="pinned-list-item" data-tab-id="${tab.id}" data-url="${this.escapeHtml(tab.url)}">
                 <img
                   class="site-favicon-sm"
@@ -909,16 +969,21 @@ class WitPinPopup {
                   <span class="site-title-link" title="${this.escapeHtml(tab.title || 'Untitled Tab')}">${this.escapeHtml(tab.title || 'Untitled Tab')}</span>
                   <span class="site-url-subtext" title="${this.escapeHtml(tab.url || '')}">${this.escapeHtml(tab.url || getDomain(tab.url))}</span>
                 </div>
-                ${isAlreadyPinned ? `
-                  <span class="status-pill status-active" style="font-size: 9.5px; padding: 2px 6px;">Pinned</span>
-                ` : `
-                  <button class="btn-primary btn-xs" data-action="pin-active-tab" data-title="${this.escapeHtml(tab.title || '')}" data-url="${this.escapeHtml(tab.url || '')}" data-favicon="${this.escapeHtml(tab.favIconUrl || '')}">
-                    ${getIconSvg('pin', '', 11)} Pin
+                <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                  ${isAlreadyPinned ? `
+                    <span class="status-pill status-active" style="font-size: 9.5px; padding: 2px 6px;">Pinned</span>
+                  ` : `
+                    <button class="btn-primary btn-xs" data-action="pin-active-tab" data-title="${this.escapeHtml(tab.title || '')}" data-url="${this.escapeHtml(tab.url || '')}" data-favicon="${this.escapeHtml(tab.favIconUrl || '')}">
+                      ${getIconSvg('pin', '', 11)} Pin
+                    </button>
+                  `}
+                  <button class="btn-icon btn-xs" data-action="active-tab-menu" data-tab-id="${tab.id}" title="Tab options" aria-label="Tab options">
+                    ${getIconSvg('moreVertical', '', 11)}
                   </button>
-                `}
+                </div>
               </div>
             `;
-          }).join('')}
+    }).join('')}
         </div>
       </div>
     `;
@@ -933,8 +998,20 @@ class WitPinPopup {
     });
 
     container.addEventListener('click', async (e) => {
+      const menuBtn = e.target.closest('[data-action="active-tab-menu"]');
+      if (menuBtn) {
+        e.stopPropagation();
+        const tabId = parseInt(menuBtn.dataset.tabId, 10);
+        const tab = this.activeTabs.find(t => t.id === tabId);
+        if (tab) {
+          this.openActiveTabContextMenu(tab, menuBtn);
+        }
+        return;
+      }
+
       const pinBtn = e.target.closest('[data-action="pin-active-tab"]');
       if (pinBtn) {
+        e.stopPropagation();
         try {
           await addPinnedSite({
             title: pinBtn.dataset.title,
@@ -946,6 +1023,17 @@ class WitPinPopup {
           this.showToast('Website pinned!');
         } catch (err) {
           this.showToast(err.message || 'Already pinned', 'error');
+        }
+        return;
+      }
+
+      const tabItem = e.target.closest('.pinned-list-item');
+      if (tabItem && !e.target.closest('button')) {
+        const tabId = parseInt(tabItem.dataset.tabId, 10);
+        if (tabId && typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.update) {
+          chrome.tabs.update(tabId, { active: true });
+        } else if (tabItem.dataset.url) {
+          this.openUrl(tabItem.dataset.url);
         }
       }
     });
@@ -1076,11 +1164,18 @@ class WitPinPopup {
     const group = this.data.groups.find(g => g.id === groupId);
     if (!group) return;
 
+    const allGroups = this.data.groups || [];
+    const groupIndex = allGroups.findIndex(g => g.id === groupId);
+    const canMoveUp = groupIndex > 0;
+    const canMoveDown = groupIndex !== -1 && groupIndex < allGroups.length - 1;
+
     this.closeContextMenu();
 
     const menuEl = document.createElement('div');
     menuEl.className = 'context-menu-dropdown';
-    menuEl.style.width = '175px';
+    menuEl.style.minWidth = '180px';
+    menuEl.style.width = 'max-content';
+    menuEl.style.maxWidth = '240px';
 
     menuEl.innerHTML = `
       <button class="context-item" id="ctx-open-window">
@@ -1091,6 +1186,42 @@ class WitPinPopup {
         ${getIconSvg('plus', '', 13)}
         <span>Add Website</span>
       </button>
+
+      <div class="menu-divider"></div>
+
+      ${canMoveUp ? `
+        <button class="context-item" id="ctx-group-move-up">
+          ${getIconSvg('arrowUp', '', 13)}
+          <span>Move Position Up</span>
+        </button>
+      ` : ''}
+
+      ${canMoveDown ? `
+        <button class="context-item" id="ctx-group-move-down">
+          ${getIconSvg('arrowDown', '', 13)}
+          <span>Move Position Down</span>
+        </button>
+      ` : ''}
+
+      ${canMoveUp || canMoveDown ? `<div class="menu-divider"></div>` : ''}
+
+      <button class="context-item" id="ctx-group-toggle-links">
+        ${getIconSvg(this.expandedGroupIds.has(groupId) ? 'chevronUp' : 'chevronDown', '', 13)}
+        <span>${this.expandedGroupIds.has(groupId) ? 'Hide Links' : 'Show Links'}</span>
+      </button>
+
+      <button class="context-item" id="ctx-group-default-open">
+        ${getIconSvg(group.defaultOpen ? 'check' : 'folder', group.defaultOpen ? 'text-accent' : '', 13)}
+        <span>Default Open: <strong>${group.defaultOpen ? 'ON' : 'OFF'}</strong></span>
+      </button>
+
+      <button class="context-item" id="ctx-all-groups-default-open">
+        ${getIconSvg('layers', this.data.settings?.defaultExpandGroups ? 'text-accent' : '', 13)}
+        <span>Default All: <strong>${this.data.settings?.defaultExpandGroups ? 'ON' : 'OFF'}</strong></span>
+      </button>
+
+      <div class="menu-divider"></div>
+
       <button class="context-item" id="ctx-duplicate">
         ${getIconSvg('layers', '', 13)}
         <span>Duplicate Group</span>
@@ -1119,6 +1250,62 @@ class WitPinPopup {
       this.openAddWebsiteModal(groupId);
     });
 
+    menuEl.querySelector('#ctx-group-move-up')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      await moveGroup(groupId, 'up');
+      await this.loadStorageData();
+      this.renderMainContent();
+      this.showToast('Group position moved up');
+    });
+
+    menuEl.querySelector('#ctx-group-move-down')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      await moveGroup(groupId, 'down');
+      await this.loadStorageData();
+      this.renderMainContent();
+      this.showToast('Group position moved down');
+    });
+
+    menuEl.querySelector('#ctx-group-toggle-links')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      if (this.expandedGroupIds.has(groupId)) {
+        this.expandedGroupIds.delete(groupId);
+      } else {
+        this.expandedGroupIds.add(groupId);
+      }
+      await this.persistExpandedState();
+      this.renderMainContent();
+    });
+
+    menuEl.querySelector('#ctx-group-default-open')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      const newVal = !group.defaultOpen;
+      await updateGroup(groupId, { defaultOpen: newVal });
+      await this.loadStorageData();
+      if (newVal) {
+        this.expandedGroupIds.add(groupId);
+      }
+      await this.persistExpandedState();
+      this.renderMainContent();
+      this.showToast(`"${group.name}" Default Open: ${newVal ? 'ON' : 'OFF'}`);
+    });
+
+    menuEl.querySelector('#ctx-all-groups-default-open')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      const currentVal = !!this.data.settings?.defaultExpandGroups;
+      const newVal = !currentVal;
+      const updated = await updateSettings({ defaultExpandGroups: newVal });
+      this.data.settings = updated;
+      if (newVal) {
+        (this.data.groups || []).forEach(g => this.expandedGroupIds.add(g.id));
+      } else {
+        this.expandedGroupIds = new Set((this.data.groups || []).filter(g => g.defaultOpen).map(g => g.id));
+      }
+      await this.persistExpandedState();
+      this.renderMainContent();
+      this.showToast(`Default All: ${newVal ? 'ON' : 'OFF'}`);
+    });
+
     menuEl.querySelector('#ctx-duplicate')?.addEventListener('click', async () => {
       this.closeContextMenu();
       await duplicateGroup(groupId);
@@ -1132,13 +1319,167 @@ class WitPinPopup {
       this.openCreateGroupModal(group);
     });
 
-    menuEl.querySelector('#ctx-delete')?.addEventListener('click', async () => {
+    menuEl.querySelector('#ctx-delete')?.addEventListener('click', () => {
       this.closeContextMenu();
-      if (confirm(`Delete group "${group.name}"?`)) {
+      const doDelete = async () => {
         await deleteGroup(groupId);
         await this.loadStorageData();
         this.renderMainContent();
-        this.showToast('Group deleted');
+        this.showToast(`Group "${group.name}" deleted`);
+      };
+
+      if (this.data.settings?.confirmDelete === false) {
+        doDelete();
+        return;
+      }
+
+      const siteCount = (group.sites || []).length;
+      this.openConfirmModal({
+        title: 'Delete Group',
+        message: `Delete group <strong style="color: var(--text-primary);">"${this.escapeHtml(group.name)}"</strong>?`,
+        subMessage: siteCount > 0
+          ? `All <strong>${siteCount}</strong> saved link${siteCount > 1 ? 's' : ''} in this group will be deleted.`
+          : 'This group is currently empty.',
+        badgeColor: group.color || '#6366F1',
+        groupName: group.name,
+        siteCount: siteCount,
+        confirmText: 'Delete Group',
+        confirmIcon: 'trash',
+        danger: true,
+        onConfirm: doDelete
+      });
+    });
+  }
+
+  openActiveTabContextMenu(tab, triggerEl) {
+    const portal = document.getElementById('modal-portal');
+    if (!portal) return;
+
+    this.closeContextMenu();
+
+    const menuEl = document.createElement('div');
+    menuEl.className = 'context-menu-dropdown';
+    menuEl.style.minWidth = '175px';
+    menuEl.style.width = 'max-content';
+    menuEl.style.maxWidth = '230px';
+
+    const pinnedUrls = new Set((this.data.pinned || []).map(p => normalizeUrl(p.url)));
+    const isAlreadyPinned = pinnedUrls.has(normalizeUrl(tab.url));
+
+    menuEl.innerHTML = `
+      <button class="context-item" id="ctx-tab-copy">
+        ${getIconSvg('copy', '', 13)}
+        <span>Copy Link URL</span>
+      </button>
+      <button class="context-item" id="ctx-tab-move-group">
+        ${getIconSvg('folderInput', '', 13)}
+        <span>Move to Group</span>
+      </button>
+
+      <div class="menu-divider"></div>
+
+      ${!isAlreadyPinned ? `
+        <button class="context-item" id="ctx-tab-pin">
+          ${getIconSvg('pin', '', 13)}
+          <span>Pin Website</span>
+        </button>
+      ` : `
+        <button class="context-item" id="ctx-tab-unpin">
+          ${getIconSvg('trash', '', 13)}
+          <span>Unpin Website</span>
+        </button>
+      `}
+
+      ${tab.id ? `
+        <button class="context-item menu-danger" id="ctx-tab-close">
+          ${getIconSvg('x', '', 13)}
+          <span>Close Tab</span>
+        </button>
+      ` : ''}
+    `;
+
+    portal.appendChild(menuEl);
+    this.positionContextMenu(menuEl, triggerEl);
+    this.setupContextMenuDismiss(menuEl);
+
+    menuEl.querySelector('#ctx-tab-copy')?.addEventListener('click', () => {
+      this.closeContextMenu();
+      if (tab.url) {
+        navigator.clipboard.writeText(tab.url).then(() => {
+          this.showToast('Link copied to clipboard');
+        }).catch(() => {
+          this.showToast('Failed to copy link', 'error');
+        });
+      }
+    });
+
+    menuEl.querySelector('#ctx-tab-move-group')?.addEventListener('click', () => {
+      this.closeContextMenu();
+      const siteObj = {
+        id: `tab-${tab.id}`,
+        title: tab.title || 'Untitled Tab',
+        url: tab.url,
+        favicon: tab.favIconUrl || tab.favicon || ''
+      };
+      this.openMoveToGroupModal(siteObj, 'active-tab', null);
+    });
+
+    menuEl.querySelector('#ctx-tab-pin')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      try {
+        await addPinnedSite({
+          title: tab.title,
+          url: tab.url,
+          favicon: tab.favIconUrl || tab.favicon
+        });
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Website pinned!');
+      } catch (err) {
+        this.showToast(err.message || 'Failed to pin', 'error');
+      }
+    });
+
+    menuEl.querySelector('#ctx-tab-unpin')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      try {
+        const pinItem = (this.data.pinned || []).find(p => normalizeUrl(p.url) === normalizeUrl(tab.url));
+        if (pinItem) {
+          const doUnpin = async () => {
+            await removePinnedSite(pinItem.id);
+            await this.loadStorageData();
+            this.renderMainContent();
+            this.showToast('Website unpinned');
+          };
+          if (this.data.settings?.confirmDelete) {
+            this.openConfirmModal({
+              title: 'Unpin Website',
+              message: `Are you sure you want to unpin <strong style="color: var(--text-primary);">"${this.escapeHtml(tab.title || pinItem.title)}"</strong>?`,
+              subMessage: tab.url ? this.escapeHtml(tab.url) : '',
+              confirmText: 'Unpin',
+              confirmIcon: 'trash',
+              danger: true,
+              onConfirm: doUnpin
+            });
+          } else {
+            await doUnpin();
+          }
+        }
+      } catch (err) {
+        this.showToast(err.message || 'Failed to unpin', 'error');
+      }
+    });
+
+    menuEl.querySelector('#ctx-tab-close')?.addEventListener('click', () => {
+      this.closeContextMenu();
+      if (tab.id && typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.remove) {
+        chrome.tabs.remove(tab.id, () => {
+          this.updateActiveTabs();
+          setTimeout(() => {
+            this.renderMainContent();
+          }, 150);
+          this.showToast('Tab closed');
+        });
       }
     });
   }
@@ -1167,7 +1508,9 @@ class WitPinPopup {
 
     const menuEl = document.createElement('div');
     menuEl.className = 'context-menu-dropdown';
-    menuEl.style.width = '175px';
+    menuEl.style.minWidth = '175px';
+    menuEl.style.width = 'max-content';
+    menuEl.style.maxWidth = '230px';
 
     menuEl.innerHTML = `
       <button class="context-item" id="ctx-site-open">
@@ -1286,18 +1629,34 @@ class WitPinPopup {
       }
     });
 
-    menuEl.querySelector('#ctx-site-delete')?.addEventListener('click', async () => {
+    menuEl.querySelector('#ctx-site-delete')?.addEventListener('click', () => {
       this.closeContextMenu();
-      if (isPinned) {
-        await removePinnedSite(site.id);
-        await this.loadStorageData();
-        this.renderMainContent();
-        this.showToast('Website unpinned');
-      } else if (groupId) {
-        await removeSiteFromGroup(groupId, site.id);
-        await this.loadStorageData();
-        this.renderMainContent();
-        this.showToast('Site removed from group');
+      const doDeleteSite = async () => {
+        if (isPinned) {
+          await removePinnedSite(site.id);
+          await this.loadStorageData();
+          this.renderMainContent();
+          this.showToast('Website unpinned');
+        } else if (groupId) {
+          await removeSiteFromGroup(groupId, site.id);
+          await this.loadStorageData();
+          this.renderMainContent();
+          this.showToast('Site removed from group');
+        }
+      };
+
+      if (this.data.settings?.confirmDelete) {
+        this.openConfirmModal({
+          title: isPinned ? 'Unpin Website' : 'Remove Site',
+          message: `Are you sure you want to ${isPinned ? 'unpin' : 'remove'} <strong style="color: var(--text-primary);">"${this.escapeHtml(site.title)}"</strong>?`,
+          subMessage: site.url ? this.escapeHtml(site.url) : '',
+          confirmText: isPinned ? 'Unpin' : 'Remove',
+          confirmIcon: 'trash',
+          danger: true,
+          onConfirm: doDeleteSite
+        });
+      } else {
+        doDeleteSite();
       }
     });
   }
@@ -1381,6 +1740,12 @@ class WitPinPopup {
             await movePinnedToGroup(site.id, targetGroupId);
           } else if (currentGroupId) {
             await moveSiteBetweenGroups(currentGroupId, targetGroupId, site.id);
+          } else {
+            await addSiteToGroup(targetGroupId, {
+              title: site.title,
+              url: site.url,
+              favicon: site.favicon
+            });
           }
           await this.loadStorageData();
           closeModal();
@@ -1500,6 +1865,11 @@ class WitPinPopup {
             <input type="color" id="input-group-color" value="${groupToEdit?.color || '#6366F1'}" style="height: 32px; cursor: pointer; padding: 2px;" />
           </div>
 
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); cursor: pointer; user-select: none; margin-top: 2px;">
+            <input type="checkbox" id="input-group-default-open" ${groupToEdit?.defaultOpen ? 'checked' : ''} style="cursor: pointer; accent-color: var(--accent-primary); width: 14px; height: 14px;" />
+            <span>Default Show Links (Keep this group open automatically)</span>
+          </label>
+
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
             <button type="button" id="modal-cancel" class="btn-secondary btn-xs">Cancel</button>
             <button type="submit" class="btn-primary btn-xs">${groupToEdit ? 'Save Changes' : (siteToMove ? 'Create & Move' : 'Create Group')}</button>
@@ -1518,20 +1888,30 @@ class WitPinPopup {
       e.preventDefault();
       const name = modalEl.querySelector('#input-group-name').value;
       const color = modalEl.querySelector('#input-group-color').value;
+      const defaultOpen = !!modalEl.querySelector('#input-group-default-open')?.checked;
 
       try {
         if (groupToEdit) {
-          await updateGroup(groupToEdit.id, { name, color });
+          await updateGroup(groupToEdit.id, { name, color, defaultOpen });
+          if (defaultOpen) this.expandedGroupIds.add(groupToEdit.id);
         } else {
-          const newGroup = await createGroup({ name, color });
+          const newGroup = await createGroup({ name, color, defaultOpen });
+          if (defaultOpen) this.expandedGroupIds.add(newGroup.id);
           if (siteToMove) {
             if (moveSourceType === 'pinned') {
               await movePinnedToGroup(siteToMove.id, newGroup.id);
             } else if (moveSourceGroupId) {
               await moveSiteBetweenGroups(moveSourceGroupId, newGroup.id, siteToMove.id);
+            } else {
+              await addSiteToGroup(newGroup.id, {
+                title: siteToMove.title,
+                url: siteToMove.url,
+                favicon: siteToMove.favicon
+              });
             }
           }
         }
+        await this.persistExpandedState();
         await this.loadStorageData();
         closeModal();
         this.renderMainContent();
@@ -1600,8 +1980,219 @@ class WitPinPopup {
     });
   }
 
+  openConfirmModal({
+    title = 'Delete Confirmation',
+    message = 'Are you sure you want to proceed?',
+    subMessage = '',
+    badgeColor = null,
+    groupName = '',
+    siteCount = null,
+    confirmText = 'Delete',
+    cancelText = 'Cancel',
+    danger = true,
+    confirmIcon = 'trash',
+    onConfirm
+  }) {
+    const portal = document.getElementById('modal-portal');
+    if (!portal) return;
+
+    this.closeModals();
+
+    const modalEl = document.createElement('div');
+    modalEl.className = 'modal-backdrop';
+    modalEl.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(4px); z-index: 3000;
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+      animation: modalFadeIn 0.15s ease-out;
+    `;
+
+    modalEl.innerHTML = `
+      <div class="modal-card confirm-modal-box" role="dialog" aria-modal="true" style="
+        background: var(--bg-primary);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        padding: 18px 20px;
+        width: 100%;
+        max-width: 350px;
+        box-shadow: var(--shadow-dropdown), 0 20px 25px -5px rgba(0, 0, 0, 0.35);
+        animation: modalScaleUp 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        box-sizing: border-box;
+      ">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="confirm-danger-badge" style="
+              width: 38px;
+              height: 38px;
+              border-radius: 10px;
+              background: ${danger ? 'var(--danger-light)' : 'var(--accent-light)'};
+              color: ${danger ? 'var(--danger-primary)' : 'var(--accent-primary)'};
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              flex-shrink: 0;
+            ">
+              ${getIconSvg(confirmIcon || (danger ? 'trash' : 'alertCircle'), '', 18)}
+            </div>
+            <div>
+              <h3 style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 0; line-height: 1.3;">
+                ${this.escapeHtml(title)}
+              </h3>
+              <div style="font-size: 10.5px; color: var(--text-muted); margin-top: 2px;">
+                This action cannot be undone
+              </div>
+            </div>
+          </div>
+          <button id="modal-close" class="btn-icon" style="padding: 4px; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer;" title="Close">
+            ${getIconSvg('x', '', 14)}
+          </button>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;">
+            ${message}
+          </div>
+
+          ${groupName ? `
+            <div class="confirm-preview-card" style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 8px 12px;
+              background: var(--bg-secondary);
+              border: 1px solid var(--border-subtle);
+              border-radius: var(--radius-md);
+            ">
+              <div style="display: flex; align-items: center; gap: 8px; overflow: hidden; max-width: 210px;">
+                <span style="width: 10px; height: 10px; border-radius: 50%; background: ${badgeColor || '#6366F1'}; flex-shrink: 0;"></span>
+                <span style="font-size: 12px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                  ${this.escapeHtml(groupName)}
+                </span>
+              </div>
+              ${siteCount !== null ? `
+                <span style="
+                  font-size: 10px;
+                  font-weight: 600;
+                  padding: 2px 7px;
+                  border-radius: var(--radius-full);
+                  background: ${siteCount > 0 ? 'var(--danger-light)' : 'var(--bg-tertiary)'};
+                  color: ${siteCount > 0 ? 'var(--danger-primary)' : 'var(--text-muted)'};
+                  white-space: nowrap;
+                ">
+                  ${siteCount} ${siteCount === 1 ? 'link' : 'links'}
+                </span>
+              ` : ''}
+            </div>
+          ` : ''}
+
+          ${subMessage ? `
+            <div style="font-size: 11px; color: ${danger ? 'var(--danger-primary)' : 'var(--text-muted)'}; line-height: 1.4; display: flex; align-items: flex-start; gap: 5px;">
+              <span style="flex-shrink: 0; margin-top: 1px;">${getIconSvg('alertCircle', '', 12)}</span>
+              <span>${subMessage}</span>
+            </div>
+          ` : ''}
+        </div>
+
+        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none; margin-top: 2px;">
+          <input type="checkbox" id="modal-dont-ask-again" style="cursor: pointer; accent-color: var(--accent-primary); width: 13px; height: 13px;" />
+          <span>Don't ask confirmation again</span>
+        </label>
+
+        <div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border-subtle);">
+          <button type="button" id="modal-cancel-btn" class="btn-secondary btn-xs" style="padding: 6px 14px; font-weight: 500; cursor: pointer;">
+            ${this.escapeHtml(cancelText)}
+          </button>
+          <button type="button" id="modal-confirm-btn" class="btn-xs ${danger ? 'btn-danger' : 'btn-primary'}" style="
+            padding: 6px 14px;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            ${danger ? 'background: var(--danger-primary); color: #fff; border: none;' : ''}
+          ">
+            ${getIconSvg(confirmIcon || 'trash', '', 12)}
+            <span>${this.escapeHtml(confirmText)}</span>
+          </button>
+        </div>
+      </div>
+    `;
+
+    portal.appendChild(modalEl);
+
+    let isCleanedUp = false;
+    const closeModal = () => {
+      if (isCleanedUp) return;
+      isCleanedUp = true;
+      document.removeEventListener('keydown', handleKeyDown);
+      modalEl.remove();
+      if (this.activeModalCleanup === closeModal) {
+        this.activeModalCleanup = null;
+      }
+    };
+    this.activeModalCleanup = closeModal;
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModal();
+      } else if (e.key === 'Enter') {
+        if (document.activeElement?.id !== 'modal-cancel-btn') {
+          e.preventDefault();
+          executeConfirm();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    modalEl.querySelector('#modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#modal-cancel-btn')?.addEventListener('click', closeModal);
+
+    modalEl.addEventListener('click', (e) => {
+      if (e.target === modalEl) {
+        closeModal();
+      }
+    });
+
+    const executeConfirm = async () => {
+      const dontAsk = modalEl.querySelector('#modal-dont-ask-again')?.checked;
+      closeModal();
+      if (dontAsk) {
+        try {
+          await updateSettings({ confirmDelete: false });
+          if (this.data && this.data.settings) {
+            this.data.settings.confirmDelete = false;
+          }
+        } catch (err) {
+          console.warn('Failed to update confirmDelete setting:', err);
+        }
+      }
+      try {
+        if (typeof onConfirm === 'function') {
+          await onConfirm();
+        }
+      } catch (err) {
+        this.showToast(err.message || 'Action failed', 'error');
+      }
+    };
+
+    modalEl.querySelector('#modal-confirm-btn')?.addEventListener('click', executeConfirm);
+
+    setTimeout(() => {
+      modalEl.querySelector('#modal-confirm-btn')?.focus();
+    }, 40);
+  }
+
   closeModals() {
     this.closeContextMenu();
+    if (typeof this.activeModalCleanup === 'function') {
+      this.activeModalCleanup();
+      this.activeModalCleanup = null;
+    }
     const portal = document.getElementById('modal-portal');
     if (portal) portal.innerHTML = '';
   }

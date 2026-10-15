@@ -2,6 +2,7 @@
   "name": "witpin-chrome-extension",
   "version": "1.0.0",
   "description": "WitPin - Fast, Privacy-First Website Pin & Group Manager Chrome Extension",
+  "homepage": "https://wittools.vercel.app/witpin",
   "type": "module",
   "scripts": {
     "generate-icons": "node scripts/create_icons.js"

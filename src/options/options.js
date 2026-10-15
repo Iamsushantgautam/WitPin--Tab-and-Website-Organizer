@@ -123,10 +123,15 @@ class WitPinOptions {
           </div>
 
           <div class="sidebar-footer">
-            <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted);">
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); margin-bottom: 6px;">
               ${getIconSvg('shieldCheck', 'text-success', 14)}
               <span>Privacy First (Local)</span>
             </div>
+            <a href="https://wittools.vercel.app/witpin" target="_blank" rel="noopener noreferrer" style="display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent-primary); text-decoration: none; font-weight: 500;">
+              ${getIconSvg('globe', '', 12)}
+              <span>Official Website</span>
+              ${getIconSvg('externalLink', '', 10)}
+            </a>
           </div>
         </aside>
 
@@ -431,6 +436,31 @@ class WitPinOptions {
                 <span>Prompt for confirmation before unpinning sites or deleting groups</span>
               </div>
             </label>
+
+            <label class="checkbox-setting-row">
+              <input type="checkbox" id="chk-defaultexpand" ${settings.defaultExpandGroups ? 'checked' : ''} />
+              <div class="setting-row-text">
+                <strong>Show all group links by default (All Groups)</strong>
+                <span>Automatically expand all groups on launch. (Note: Individual groups can also be set to Default Show separately in the popup).</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- About & Website Card -->
+        <div class="options-card">
+          <div class="options-card-header">
+            ${getIconSvg('globe', 'text-accent', 18)}
+            <h2>About & Resources</h2>
+          </div>
+          <div class="options-card-body" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <strong style="display: block; font-size: 12px; margin-bottom: 2px;">witPin Official Website</strong>
+              <span style="font-size: 11px; color: var(--text-muted);">Explore features, updates, and more productivity tools</span>
+            </div>
+            <a href="https://wittools.vercel.app/witpin" target="_blank" rel="noopener noreferrer" class="btn-primary btn-sm" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;">
+              ${getIconSvg('externalLink', '', 12)} Visit Website
+            </a>
           </div>
         </div>
       </div>
@@ -564,6 +594,9 @@ class WitPinOptions {
     });
     document.getElementById('chk-confirmdelete')?.addEventListener('change', (e) => {
       this.updateSetting('confirmDelete', e.target.checked);
+    });
+    document.getElementById('chk-defaultexpand')?.addEventListener('change', (e) => {
+      this.updateSetting('defaultExpandGroups', e.target.checked);
     });
 
     // Dashboard Table Action Handlers

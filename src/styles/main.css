@@ -1387,10 +1387,65 @@ input:focus, select:focus, textarea:focus {
   color: var(--danger-hover);
 }
 
+.context-menu-dropdown .menu-divider,
 .portal-menu-dropdown .menu-divider {
   height: 1px;
   background-color: var(--border-subtle);
-  margin: 3px 0;
+  margin: 3px 2px;
+}
+
+.pinned-drag-handle {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  opacity: 0.25;
+  cursor: grab;
+  flex-shrink: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.pinned-list-item:hover .pinned-drag-handle {
+  opacity: 0.75;
+}
+
+.pinned-drag-handle:hover {
+  opacity: 1;
+  color: var(--accent-primary);
+}
+
+.pinned-list-item[draggable="true"],
+.pinned-card-item[draggable="true"] {
+  cursor: grab;
+}
+
+.pinned-list-item.is-dragging,
+.pinned-card-item.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.pinned-list-item.drag-over {
+  border-color: var(--accent-primary) !important;
+  background-color: var(--accent-light) !important;
+  box-shadow: 0 0 0 1.5px var(--accent-primary);
+}
+
+.pinned-card-item.drag-over {
+  border-color: var(--accent-primary) !important;
+  background-color: var(--accent-light) !important;
+  box-shadow: 0 0 0 1.5px var(--accent-primary);
+  transform: scale(1.02);
+}
+
+.group-card-compact.drag-target-group {
+  border-color: var(--accent-primary) !important;
+  box-shadow: 0 0 0 2px var(--accent-primary), 0 4px 12px rgba(99, 102, 241, 0.15) !important;
+  background-color: var(--accent-light) !important;
+}
+
+.group-select-btn:hover {
+  background-color: var(--bg-hover) !important;
+  border-color: var(--accent-primary) !important;
 }
 
 .rename-input {

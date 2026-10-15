@@ -9,6 +9,11 @@ import {
   removePinnedSite,
   updatePinnedSite,
   reorderPinned,
+  movePinnedSite,
+  moveSiteInGroup,
+  movePinnedToGroup,
+  moveGroupSiteToPinned,
+  moveSiteBetweenGroups,
   createGroup,
   updateGroup,
   deleteGroup,
@@ -495,6 +500,36 @@ class WitPinPopup {
         ` : ''}
       `;
 
+      // Allow dropping dragged pinned sites onto this group
+      groupCard.addEventListener('dragover', (e) => {
+        if (this._draggedPinnedId) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          groupCard.classList.add('drag-target-group');
+        }
+      });
+
+      groupCard.addEventListener('dragleave', () => {
+        groupCard.classList.remove('drag-target-group');
+      });
+
+      groupCard.addEventListener('drop', async (e) => {
+        if (this._draggedPinnedId) {
+          e.preventDefault();
+          groupCard.classList.remove('drag-target-group');
+          const siteId = this._draggedPinnedId;
+          this._draggedPinnedId = null;
+          try {
+            await movePinnedToGroup(siteId, group.id);
+            await this.loadStorageData();
+            this.renderMainContent();
+            this.showToast(`Moved to "${group.name}"`);
+          } catch (err) {
+            this.showToast(err.message || 'Failed to move website', 'error');
+          }
+        }
+      });
+
       listEl.appendChild(groupCard);
     });
 
@@ -623,12 +658,15 @@ class WitPinPopup {
         pinItem.setAttribute('tabindex', '0');
         pinItem.setAttribute('role', 'button');
         pinItem.setAttribute('aria-label', `Open ${site.title}`);
+        pinItem.setAttribute('draggable', 'true');
+        pinItem.dataset.siteId = site.id;
 
         const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
         const letterBadge = getLetterBadgeSvg(site.url, site.title);
         const domain = getDomain(site.url);
 
         pinItem.innerHTML = `
+          <span class="pinned-drag-handle" title="Drag to reorder">${getIconSvg('grip', '', 11)}</span>
           <img
             class="site-favicon-sm"
             src="${this.escapeHtml(faviconUrl)}"
@@ -645,8 +683,60 @@ class WitPinPopup {
           </button>
         `;
 
+        // Drag & drop handlers
+        pinItem.addEventListener('dragstart', (e) => {
+          this._isDragging = true;
+          this._draggedPinnedId = site.id;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', site.id);
+          pinItem.classList.add('is-dragging');
+        });
+
+        pinItem.addEventListener('dragend', () => {
+          pinItem.classList.remove('is-dragging');
+          document.querySelectorAll('.pinned-list-item, .pinned-card-item, .group-card-compact').forEach(el => {
+            el.classList.remove('drag-over', 'drag-target-group');
+          });
+          setTimeout(() => {
+            this._isDragging = false;
+            this._draggedPinnedId = null;
+          }, 50);
+        });
+
+        pinItem.addEventListener('dragover', (e) => {
+          if (!this._draggedPinnedId || this._draggedPinnedId === site.id) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          pinItem.classList.add('drag-over');
+        });
+
+        pinItem.addEventListener('dragleave', () => {
+          pinItem.classList.remove('drag-over');
+        });
+
+        pinItem.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          pinItem.classList.remove('drag-over');
+          const sourceId = this._draggedPinnedId || e.dataTransfer.getData('text/plain');
+          if (!sourceId || sourceId === site.id) return;
+
+          const pinned = [...(this.data.pinned || [])];
+          const fromIndex = pinned.findIndex(p => p.id === sourceId);
+          const toIndex = pinned.findIndex(p => p.id === site.id);
+          if (fromIndex === -1 || toIndex === -1) return;
+
+          const [movedItem] = pinned.splice(fromIndex, 1);
+          pinned.splice(toIndex, 0, movedItem);
+
+          await reorderPinned(pinned);
+          await this.loadStorageData();
+          this.renderMainContent();
+          this.showToast('Pinned order updated');
+        });
+
         // Handle item click
         pinItem.addEventListener('click', async (e) => {
+          if (this._isDragging) return;
           const menuBtn = e.target.closest('[data-action="site-menu"]');
           if (menuBtn) {
             e.stopPropagation();
@@ -677,6 +767,8 @@ class WitPinPopup {
         pinCard.setAttribute('tabindex', '0');
         pinCard.setAttribute('role', 'button');
         pinCard.setAttribute('aria-label', `Open ${site.title}`);
+        pinCard.setAttribute('draggable', 'true');
+        pinCard.dataset.siteId = site.id;
 
         const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
         const letterBadge = getLetterBadgeSvg(site.url, site.title);
@@ -701,8 +793,60 @@ class WitPinPopup {
           </div>
         `;
 
+        // Drag & drop handlers
+        pinCard.addEventListener('dragstart', (e) => {
+          this._isDragging = true;
+          this._draggedPinnedId = site.id;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', site.id);
+          pinCard.classList.add('is-dragging');
+        });
+
+        pinCard.addEventListener('dragend', () => {
+          pinCard.classList.remove('is-dragging');
+          document.querySelectorAll('.pinned-list-item, .pinned-card-item, .group-card-compact').forEach(el => {
+            el.classList.remove('drag-over', 'drag-target-group');
+          });
+          setTimeout(() => {
+            this._isDragging = false;
+            this._draggedPinnedId = null;
+          }, 50);
+        });
+
+        pinCard.addEventListener('dragover', (e) => {
+          if (!this._draggedPinnedId || this._draggedPinnedId === site.id) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          pinCard.classList.add('drag-over');
+        });
+
+        pinCard.addEventListener('dragleave', () => {
+          pinCard.classList.remove('drag-over');
+        });
+
+        pinCard.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          pinCard.classList.remove('drag-over');
+          const sourceId = this._draggedPinnedId || e.dataTransfer.getData('text/plain');
+          if (!sourceId || sourceId === site.id) return;
+
+          const pinned = [...(this.data.pinned || [])];
+          const fromIndex = pinned.findIndex(p => p.id === sourceId);
+          const toIndex = pinned.findIndex(p => p.id === site.id);
+          if (fromIndex === -1 || toIndex === -1) return;
+
+          const [movedItem] = pinned.splice(fromIndex, 1);
+          pinned.splice(toIndex, 0, movedItem);
+
+          await reorderPinned(pinned);
+          await this.loadStorageData();
+          this.renderMainContent();
+          this.showToast('Pinned order updated');
+        });
+
         // Handle card click
         pinCard.addEventListener('click', async (e) => {
+          if (this._isDragging) return;
           const menuBtn = e.target.closest('[data-action="site-menu"]');
           if (menuBtn) {
             e.stopPropagation();
@@ -1005,11 +1149,25 @@ class WitPinPopup {
 
     this.closeContextMenu();
 
+    const isPinned = type === 'pinned';
+    let canMoveUp = false;
+    let canMoveDown = false;
+
+    if (isPinned) {
+      const pinnedList = this.data.pinned || [];
+      const pinIndex = pinnedList.findIndex(p => p.id === site.id);
+      canMoveUp = pinIndex > 0;
+      canMoveDown = pinIndex !== -1 && pinIndex < pinnedList.length - 1;
+    } else if (groupId) {
+      const group = (this.data.groups || []).find(g => g.id === groupId);
+      const siteIndex = (group?.sites || []).findIndex(s => s.id === site.id);
+      canMoveUp = siteIndex > 0;
+      canMoveDown = siteIndex !== -1 && siteIndex < (group?.sites || []).length - 1;
+    }
+
     const menuEl = document.createElement('div');
     menuEl.className = 'context-menu-dropdown';
-    menuEl.style.width = '165px';
-
-    const isPinned = type === 'pinned';
+    menuEl.style.width = '175px';
 
     menuEl.innerHTML = `
       <button class="context-item" id="ctx-site-open">
@@ -1020,6 +1178,43 @@ class WitPinPopup {
         ${getIconSvg('copy', '', 13)}
         <span>Copy Link URL</span>
       </button>
+
+      <div class="menu-divider"></div>
+
+      ${canMoveUp ? `
+        <button class="context-item" id="ctx-site-move-up">
+          ${getIconSvg('arrowUp', '', 13)}
+          <span>Move Position Up</span>
+        </button>
+      ` : ''}
+
+      ${canMoveDown ? `
+        <button class="context-item" id="ctx-site-move-down">
+          ${getIconSvg('arrowDown', '', 13)}
+          <span>Move Position Down</span>
+        </button>
+      ` : ''}
+
+      ${isPinned ? `
+        <button class="context-item" id="ctx-site-move-group">
+          ${getIconSvg('folderInput', '', 13)}
+          <span>Move to Group</span>
+        </button>
+      ` : `
+        <button class="context-item" id="ctx-site-move-pinned">
+          ${getIconSvg('pin', '', 13)}
+          <span>Move to Pinned</span>
+        </button>
+        ${(this.data.groups || []).length > 1 ? `
+          <button class="context-item" id="ctx-site-move-group">
+            ${getIconSvg('folderInput', '', 13)}
+            <span>Move to Group</span>
+          </button>
+        ` : ''}
+      `}
+
+      <div class="menu-divider"></div>
+
       <button class="context-item menu-danger" id="ctx-site-delete">
         ${getIconSvg('trash', '', 13)}
         <span>${isPinned ? 'Unpin Website' : 'Remove Site'}</span>
@@ -1046,6 +1241,51 @@ class WitPinPopup {
       }
     });
 
+    menuEl.querySelector('#ctx-site-move-up')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      if (isPinned) {
+        await movePinnedSite(site.id, 'up');
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Moved position up');
+      } else if (groupId) {
+        await moveSiteInGroup(groupId, site.id, 'up');
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Moved position up');
+      }
+    });
+
+    menuEl.querySelector('#ctx-site-move-down')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      if (isPinned) {
+        await movePinnedSite(site.id, 'down');
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Moved position down');
+      } else if (groupId) {
+        await moveSiteInGroup(groupId, site.id, 'down');
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Moved position down');
+      }
+    });
+
+    menuEl.querySelector('#ctx-site-move-group')?.addEventListener('click', () => {
+      this.closeContextMenu();
+      this.openMoveToGroupModal(site, type, groupId);
+    });
+
+    menuEl.querySelector('#ctx-site-move-pinned')?.addEventListener('click', async () => {
+      this.closeContextMenu();
+      if (groupId) {
+        await moveGroupSiteToPinned(groupId, site.id);
+        await this.loadStorageData();
+        this.renderMainContent();
+        this.showToast('Moved to Pinned');
+      }
+    });
+
     menuEl.querySelector('#ctx-site-delete')?.addEventListener('click', async () => {
       this.closeContextMenu();
       if (isPinned) {
@@ -1059,6 +1299,102 @@ class WitPinPopup {
         this.renderMainContent();
         this.showToast('Site removed from group');
       }
+    });
+  }
+
+  openMoveToGroupModal(site, currentType = 'pinned', currentGroupId = null) {
+    const portal = document.getElementById('modal-portal');
+    if (!portal) return;
+
+    this.closeModals();
+
+    const groups = this.data.groups || [];
+    const availableGroups = groups.filter(g => g.id !== currentGroupId);
+
+    const modalEl = document.createElement('div');
+    modalEl.className = 'modal-backdrop';
+    modalEl.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 3000;
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    `;
+
+    const faviconUrl = cleanFaviconUrl(site.favicon, site.url, site.title);
+    const letterBadge = getLetterBadgeSvg(site.url, site.title);
+
+    modalEl.innerHTML = `
+      <div class="modal-card" style="background: var(--bg-primary); border-radius: var(--radius-lg); padding: 16px; width: 100%; max-width: 340px; box-shadow: var(--shadow-dropdown);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+            ${getIconSvg('folderInput', 'text-accent', 15)}
+            <span>Move to Group</span>
+          </h3>
+          <button id="modal-close" class="btn-icon">${getIconSvg('x', '', 14)}</button>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-subtle); margin-bottom: 12px;">
+          <img src="${this.escapeHtml(faviconUrl)}" style="width: 16px; height: 16px; object-fit: contain; flex-shrink: 0;" onError="this.onerror=null; this.src='${letterBadge}';" alt="" />
+          <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;">
+            <div style="font-size: 11.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(site.title)}</div>
+            <div style="font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${this.escapeHtml(site.url)}</div>
+          </div>
+        </div>
+
+        <div style="font-size: 10.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;">Select Destination Group:</div>
+
+        <div id="modal-group-list" style="display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; margin-bottom: 12px; padding-right: 2px;">
+          ${availableGroups.length === 0 ? `
+            <div style="padding: 16px 8px; text-align: center; color: var(--text-muted); font-size: 11px;">
+              No other groups yet. Create a new group below!
+            </div>
+          ` : availableGroups.map(g => `
+            <button class="group-select-btn" data-group-id="${g.id}" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); cursor: pointer; text-align: left; transition: all var(--transition-fast);">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="width: 10px; height: 10px; border-radius: 50%; background: ${g.color || '#6366F1'}; flex-shrink: 0;"></span>
+                <span style="font-size: 11.5px; font-weight: 600; color: var(--text-primary);">${this.escapeHtml(g.name)}</span>
+              </div>
+              <span class="badge-count-sm">${(g.sites || []).length} sites</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 8px; border-top: 1px solid var(--border-subtle);">
+          <button type="button" id="btn-create-new-group-move" class="btn-secondary btn-xs" style="gap: 5px;">
+            ${getIconSvg('plus', '', 11)} New Group
+          </button>
+          <button type="button" id="modal-cancel" class="btn-secondary btn-xs">Cancel</button>
+        </div>
+      </div>
+    `;
+
+    portal.appendChild(modalEl);
+
+    const closeModal = () => modalEl.remove();
+    modalEl.querySelector('#modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#modal-cancel')?.addEventListener('click', closeModal);
+
+    modalEl.querySelectorAll('.group-select-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const targetGroupId = btn.dataset.groupId;
+        const targetGroup = groups.find(g => g.id === targetGroupId);
+        try {
+          if (currentType === 'pinned') {
+            await movePinnedToGroup(site.id, targetGroupId);
+          } else if (currentGroupId) {
+            await moveSiteBetweenGroups(currentGroupId, targetGroupId, site.id);
+          }
+          await this.loadStorageData();
+          closeModal();
+          this.renderMainContent();
+          this.showToast(`Moved to "${targetGroup ? targetGroup.name : 'Group'}"`);
+        } catch (err) {
+          this.showToast(err.message || 'Failed to move website', 'error');
+        }
+      });
+    });
+
+    modalEl.querySelector('#btn-create-new-group-move')?.addEventListener('click', () => {
+      closeModal();
+      this.openCreateGroupModal(null, site, currentType, currentGroupId);
     });
   }
 
@@ -1135,7 +1471,7 @@ class WitPinPopup {
     });
   }
 
-  openCreateGroupModal(groupToEdit = null) {
+  openCreateGroupModal(groupToEdit = null, siteToMove = null, moveSourceType = 'pinned', moveSourceGroupId = null) {
     const portal = document.getElementById('modal-portal');
     if (!portal) return;
 
@@ -1149,7 +1485,7 @@ class WitPinPopup {
     modalEl.innerHTML = `
       <div class="modal-card" style="background: var(--bg-primary); border-radius: var(--radius-lg); padding: 16px; width: 100%; max-width: 340px; box-shadow: var(--shadow-dropdown);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <h3 style="font-size: 13px; font-weight: 700;">${groupToEdit ? 'Edit Group' : 'New Group'}</h3>
+          <h3 style="font-size: 13px; font-weight: 700;">${groupToEdit ? 'Edit Group' : (siteToMove ? 'Create Group & Move Link' : 'New Group')}</h3>
           <button id="modal-close" class="btn-icon">${getIconSvg('x', '', 14)}</button>
         </div>
 
@@ -1166,7 +1502,7 @@ class WitPinPopup {
 
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
             <button type="button" id="modal-cancel" class="btn-secondary btn-xs">Cancel</button>
-            <button type="submit" class="btn-primary btn-xs">${groupToEdit ? 'Save Changes' : 'Create Group'}</button>
+            <button type="submit" class="btn-primary btn-xs">${groupToEdit ? 'Save Changes' : (siteToMove ? 'Create & Move' : 'Create Group')}</button>
           </div>
         </form>
       </div>
@@ -1187,12 +1523,19 @@ class WitPinPopup {
         if (groupToEdit) {
           await updateGroup(groupToEdit.id, { name, color });
         } else {
-          await createGroup({ name, color });
+          const newGroup = await createGroup({ name, color });
+          if (siteToMove) {
+            if (moveSourceType === 'pinned') {
+              await movePinnedToGroup(siteToMove.id, newGroup.id);
+            } else if (moveSourceGroupId) {
+              await moveSiteBetweenGroups(moveSourceGroupId, newGroup.id, siteToMove.id);
+            }
+          }
         }
         await this.loadStorageData();
         closeModal();
         this.renderMainContent();
-        this.showToast(groupToEdit ? 'Group updated' : 'Group created');
+        this.showToast(groupToEdit ? 'Group updated' : (siteToMove ? `Group created & moved "${siteToMove.title}"` : 'Group created'));
       } catch (err) {
         this.showToast(err.message || 'Failed to save group', 'error');
       }

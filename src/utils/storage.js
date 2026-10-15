@@ -236,6 +236,133 @@ export async function reorderPinned(newPinnedArray) {
 }
 
 /**
+ * Move a pinned site up or down
+ */
+export async function movePinnedSite(siteId, direction) {
+  const data = await getData();
+  const index = data.pinned.findIndex(p => p.id === siteId);
+  if (index === -1) return data;
+
+  let targetIndex = index;
+  if (direction === 'up' && index > 0) {
+    targetIndex = index - 1;
+  } else if (direction === 'down' && index < data.pinned.length - 1) {
+    targetIndex = index + 1;
+  }
+
+  if (targetIndex !== index) {
+    const [item] = data.pinned.splice(index, 1);
+    data.pinned.splice(targetIndex, 0, item);
+    await saveData(data);
+  }
+  return data;
+}
+
+/**
+ * Move a site inside a group up or down
+ */
+export async function moveSiteInGroup(groupId, siteId, direction) {
+  const data = await getData();
+  const group = data.groups.find(g => g.id === groupId);
+  if (!group || !Array.isArray(group.sites)) return data;
+
+  const index = group.sites.findIndex(s => s.id === siteId);
+  if (index === -1) return data;
+
+  let targetIndex = index;
+  if (direction === 'up' && index > 0) {
+    targetIndex = index - 1;
+  } else if (direction === 'down' && index < group.sites.length - 1) {
+    targetIndex = index + 1;
+  }
+
+  if (targetIndex !== index) {
+    const [item] = group.sites.splice(index, 1);
+    group.sites.splice(targetIndex, 0, item);
+    group.updatedAt = Date.now();
+    await saveData(data);
+  }
+  return data;
+}
+
+/**
+ * Move a pinned site into a group
+ */
+export async function movePinnedToGroup(pinnedSiteId, targetGroupId) {
+  const data = await getData();
+  const pinIndex = data.pinned.findIndex(p => p.id === pinnedSiteId);
+  if (pinIndex === -1) throw new Error('Pinned website not found.');
+
+  const group = data.groups.find(g => g.id === targetGroupId);
+  if (!group) throw new Error('Target group not found.');
+
+  const [site] = data.pinned.splice(pinIndex, 1);
+  if (!Array.isArray(group.sites)) {
+    group.sites = [];
+  }
+  group.sites.push({
+    ...site,
+    updatedAt: Date.now()
+  });
+  group.updatedAt = Date.now();
+
+  await saveData(data);
+  return data;
+}
+
+/**
+ * Move a site from a group to pinned list
+ */
+export async function moveGroupSiteToPinned(groupId, siteId) {
+  const data = await getData();
+  const group = data.groups.find(g => g.id === groupId);
+  if (!group || !Array.isArray(group.sites)) throw new Error('Group not found.');
+
+  const siteIndex = group.sites.findIndex(s => s.id === siteId);
+  if (siteIndex === -1) throw new Error('Site not found in group.');
+
+  const [site] = group.sites.splice(siteIndex, 1);
+  group.updatedAt = Date.now();
+
+  if (!Array.isArray(data.pinned)) data.pinned = [];
+  if (!data.pinned.some(p => p.url.toLowerCase() === site.url.toLowerCase())) {
+    data.pinned.push({
+      ...site,
+      updatedAt: Date.now()
+    });
+  }
+
+  await saveData(data);
+  return data;
+}
+
+/**
+ * Move a site from one group to another group
+ */
+export async function moveSiteBetweenGroups(fromGroupId, toGroupId, siteId) {
+  const data = await getData();
+  const fromGroup = data.groups.find(g => g.id === fromGroupId);
+  const toGroup = data.groups.find(g => g.id === toGroupId);
+  if (!fromGroup || !toGroup) throw new Error('Selected groups not found.');
+
+  const siteIndex = (fromGroup.sites || []).findIndex(s => s.id === siteId);
+  if (siteIndex === -1) throw new Error('Site not found in group.');
+
+  const [site] = fromGroup.sites.splice(siteIndex, 1);
+  fromGroup.updatedAt = Date.now();
+
+  if (!Array.isArray(toGroup.sites)) toGroup.sites = [];
+  toGroup.sites.push({
+    ...site,
+    updatedAt: Date.now()
+  });
+  toGroup.updatedAt = Date.now();
+
+  await saveData(data);
+  return data;
+}
+
+/**
  * Create a new website group
  */
 export async function createGroup({ name, color = '#6366F1', chromeGroupId = null, sites = [] }) {

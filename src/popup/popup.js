@@ -807,6 +807,124 @@ class WitPinPopup {
     });
   }
 
+  closeContextMenu() {
+    if (this._activeContextMenuCleanup) {
+      this._activeContextMenuCleanup();
+      this._activeContextMenuCleanup = null;
+    }
+    document.querySelectorAll('.context-menu-dropdown').forEach(el => el.remove());
+  }
+
+  setupContextMenuDismiss(menuEl) {
+    const handleOutsideClick = (e) => {
+      if (!menuEl.contains(e.target)) {
+        this.closeContextMenu();
+      }
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        this.closeContextMenu();
+      }
+    };
+
+    const handleScroll = (e) => {
+      if (!menuEl.contains(e.target)) {
+        this.closeContextMenu();
+      }
+    };
+
+    const handleResize = () => {
+      this.closeContextMenu();
+    };
+
+    const cleanup = () => {
+      window.removeEventListener('click', handleOutsideClick, true);
+      window.removeEventListener('contextmenu', handleOutsideClick, true);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleResize);
+    };
+
+    this._activeContextMenuCleanup = cleanup;
+
+    setTimeout(() => {
+      window.addEventListener('click', handleOutsideClick, true);
+      window.addEventListener('contextmenu', handleOutsideClick, true);
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('scroll', handleScroll, true);
+      window.addEventListener('resize', handleResize);
+    }, 10);
+  }
+
+  positionContextMenu(menuEl, triggerEl) {
+    const rect = triggerEl.getBoundingClientRect();
+    const margin = 8;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    const menuWidth = menuEl.offsetWidth || 170;
+    const menuHeight = menuEl.offsetHeight || 120;
+
+    const spaceBelow = viewportHeight - rect.bottom - 4;
+    const spaceAbove = rect.top - 4;
+
+    let top;
+    let isFlipped = false;
+
+    // Flip upwards if overflowing below and more room above
+    if (spaceBelow < menuHeight && spaceAbove >= menuHeight) {
+      top = rect.top - menuHeight - 4;
+      isFlipped = true;
+    } else if (spaceBelow >= menuHeight) {
+      top = rect.bottom + 4;
+    } else {
+      if (spaceAbove > spaceBelow) {
+        top = rect.top - menuHeight - 4;
+        isFlipped = true;
+      } else {
+        top = rect.bottom + 4;
+      }
+    }
+
+    // Clamp strictly within vertical viewport margins
+    if (top + menuHeight > viewportHeight - margin) {
+      top = viewportHeight - menuHeight - margin;
+    }
+    if (top < margin) {
+      top = margin;
+    }
+
+    // If menu is taller than viewport, enable scrolling
+    if (menuHeight > viewportHeight - (margin * 2)) {
+      menuEl.style.maxHeight = `${viewportHeight - (margin * 2)}px`;
+      menuEl.style.overflowY = 'auto';
+    }
+
+    // Horizontal positioning: align right edge of menu with right edge of trigger button
+    let left = rect.right - menuWidth;
+
+    // Clamp within horizontal viewport margins
+    if (left + menuWidth > viewportWidth - margin) {
+      left = viewportWidth - menuWidth - margin;
+    }
+    if (left < margin) {
+      left = margin;
+    }
+
+    menuEl.style.position = 'fixed';
+    menuEl.style.top = `${Math.round(top)}px`;
+    menuEl.style.left = `${Math.round(left)}px`;
+    menuEl.style.right = 'auto';
+    menuEl.style.bottom = 'auto';
+
+    if (isFlipped) {
+      menuEl.classList.add('menu-flipped');
+    } else {
+      menuEl.classList.remove('menu-flipped');
+    }
+  }
+
   openGroupContextMenu(groupId, triggerEl) {
     const portal = document.getElementById('modal-portal');
     if (!portal) return;
@@ -814,22 +932,11 @@ class WitPinPopup {
     const group = this.data.groups.find(g => g.id === groupId);
     if (!group) return;
 
-    const rect = triggerEl.getBoundingClientRect();
+    this.closeContextMenu();
 
     const menuEl = document.createElement('div');
     menuEl.className = 'context-menu-dropdown';
-    menuEl.style.cssText = `
-      position: fixed;
-      top: ${rect.bottom + 4}px;
-      right: ${window.innerWidth - rect.right}px;
-      z-index: 2000;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      box-shadow: var(--shadow-dropdown);
-      padding: 4px;
-      width: 175px;
-    `;
+    menuEl.style.width = '175px';
 
     menuEl.innerHTML = `
       <button class="context-item" id="ctx-open-window">
@@ -855,27 +962,21 @@ class WitPinPopup {
     `;
 
     portal.appendChild(menuEl);
-
-    const closeHandler = (e) => {
-      if (!menuEl.contains(e.target)) {
-        menuEl.remove();
-        window.removeEventListener('click', closeHandler);
-      }
-    };
-    setTimeout(() => window.addEventListener('click', closeHandler), 10);
+    this.positionContextMenu(menuEl, triggerEl);
+    this.setupContextMenuDismiss(menuEl);
 
     menuEl.querySelector('#ctx-open-window')?.addEventListener('click', () => {
-      menuEl.remove();
+      this.closeContextMenu();
       if (group.sites?.length > 0) this.openUrls(group.sites.map(s => s.url), true);
     });
 
     menuEl.querySelector('#ctx-add-site')?.addEventListener('click', () => {
-      menuEl.remove();
+      this.closeContextMenu();
       this.openAddWebsiteModal(groupId);
     });
 
     menuEl.querySelector('#ctx-duplicate')?.addEventListener('click', async () => {
-      menuEl.remove();
+      this.closeContextMenu();
       await duplicateGroup(groupId);
       await this.loadStorageData();
       this.renderMainContent();
@@ -883,12 +984,12 @@ class WitPinPopup {
     });
 
     menuEl.querySelector('#ctx-edit')?.addEventListener('click', () => {
-      menuEl.remove();
+      this.closeContextMenu();
       this.openCreateGroupModal(group);
     });
 
     menuEl.querySelector('#ctx-delete')?.addEventListener('click', async () => {
-      menuEl.remove();
+      this.closeContextMenu();
       if (confirm(`Delete group "${group.name}"?`)) {
         await deleteGroup(groupId);
         await this.loadStorageData();
@@ -902,22 +1003,11 @@ class WitPinPopup {
     const portal = document.getElementById('modal-portal');
     if (!portal) return;
 
-    const rect = triggerEl.getBoundingClientRect();
+    this.closeContextMenu();
 
     const menuEl = document.createElement('div');
     menuEl.className = 'context-menu-dropdown';
-    menuEl.style.cssText = `
-      position: fixed;
-      top: ${rect.bottom + 4}px;
-      right: ${window.innerWidth - rect.right}px;
-      z-index: 2000;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      box-shadow: var(--shadow-dropdown);
-      padding: 4px;
-      width: 165px;
-    `;
+    menuEl.style.width = '165px';
 
     const isPinned = type === 'pinned';
 
@@ -937,22 +1027,16 @@ class WitPinPopup {
     `;
 
     portal.appendChild(menuEl);
-
-    const closeHandler = (e) => {
-      if (!menuEl.contains(e.target)) {
-        menuEl.remove();
-        window.removeEventListener('click', closeHandler);
-      }
-    };
-    setTimeout(() => window.addEventListener('click', closeHandler), 10);
+    this.positionContextMenu(menuEl, triggerEl);
+    this.setupContextMenuDismiss(menuEl);
 
     menuEl.querySelector('#ctx-site-open')?.addEventListener('click', () => {
-      menuEl.remove();
+      this.closeContextMenu();
       this.openUrl(site.url);
     });
 
     menuEl.querySelector('#ctx-site-copy')?.addEventListener('click', () => {
-      menuEl.remove();
+      this.closeContextMenu();
       if (site.url) {
         navigator.clipboard.writeText(site.url).then(() => {
           this.showToast('Link copied to clipboard');
@@ -963,7 +1047,7 @@ class WitPinPopup {
     });
 
     menuEl.querySelector('#ctx-site-delete')?.addEventListener('click', async () => {
-      menuEl.remove();
+      this.closeContextMenu();
       if (isPinned) {
         await removePinnedSite(site.id);
         await this.loadStorageData();
@@ -1174,6 +1258,7 @@ class WitPinPopup {
   }
 
   closeModals() {
+    this.closeContextMenu();
     const portal = document.getElementById('modal-portal');
     if (portal) portal.innerHTML = '';
   }
